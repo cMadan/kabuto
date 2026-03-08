@@ -2,6 +2,19 @@
 
 All notable changes to the Kabuto MCQ Exam Pipeline are documented in this file.
 
+## v1.3
+
+- Added build-record folder support to `do3_export_bank_to_pyexam.py`
+  - `--build-dir` writes versioned exam YAMLs, per-version manifests, answer keys, and a top-level build-set manifest
+  - writes `selected_question_ids.txt` for traceability
+- Added exam set generation to `do3_export_bank_to_pyexam.py`
+  - `--num-versions N`
+  - same selected questions, different randomisation seeds
+  - auto-generates a base seed for sets if none is provided
+- Updated `do4_build_pyexam.py` to support batch builds from a directory of exported exam YAML files
+  - writes per-version build manifests
+  - writes batch build manifest
+
 ## v1.2
 
 - Added `active` column to canonical Excel schema (after `id`)

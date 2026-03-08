@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -15,6 +16,7 @@ from kabuto_common import (
     chapter_section_in_range,
     questions_to_pyexam_yaml,
     randomize_questions_for_export,
+    sanitize_filename_part,
     validate_questions,
 )
 
@@ -22,17 +24,19 @@ from kabuto_common import (
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description='Export curated Excel bank/subset to pyexam YAML')
     p.add_argument('input_xlsx', help='Path to curated bank workbook')
-    p.add_argument('output_yaml', help='Output pyexam YAML path')
+    p.add_argument('output_yaml', help='Output pyexam YAML path (or basename when using --build-dir)')
     p.add_argument('--sheet', default=None, help='Worksheet name for input_xlsx (default: active sheet)')
     p.add_argument('--exam-name', default='Exam', help="pyexam document 'name' field")
     p.add_argument('--header-file', default=None, help='Path to text file inserted as pyexam header (optional)')
     p.add_argument('--header-text', default=None, help='Header text literal (optional; ignored if --header-file is used)')
-    p.add_argument('--seed', type=int, default=None, help='Seed for question/option randomisation')
+    p.add_argument('--seed', type=int, default=None, help='Base seed for question/option randomisation')
     p.add_argument('--auto-seed', action='store_true', help='Generate a seed automatically when --seed is not provided')
+    p.add_argument('--num-versions', type=int, default=1, help='Generate a set of versions with same selected questions but different randomisation (default: 1)')
+    p.add_argument('--build-dir', default=None, help='If set, write versioned exports/manifests into this folder (recommended for exam sets)')
     p.add_argument('--no-shuffle-questions', action='store_true', help='Preserve row order from Excel (default shuffles questions)')
     p.add_argument('--no-shuffle-options', action='store_true', help='Do not shuffle any options (ignores shuffle_mode=random)')
     p.add_argument('--show-ids', action='store_true', help='Prefix each question stem with [id] in exported text')
-    p.add_argument('--manifest', default=None, help='Path for export manifest JSON (default: <output_yaml>.manifest.json)')
+    p.add_argument('--manifest', default=None, help='Path for export manifest JSON (single-version mode only; default: <output_yaml>.manifest.json)')
     p.add_argument('--allow-warnings', action='store_true', help='Continue export if validator warnings are present')
 
     # Subsetting / filtering
@@ -65,9 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--subset-sheet', default=None, help='Worksheet name for --subset-xlsx (default: active sheet)')
 
     # Answer key outputs
-    p.add_argument('--answer-key-csv', default=None, help='Write answer key CSV (default: alongside YAML when --answer-key is used)')
-    p.add_argument('--answer-key-md', default=None, help='Write answer key Markdown table (PDF-friendly intermediate)')
-    p.add_argument('--answer-key', action='store_true', help='Write default answer-key CSV and Markdown alongside output YAML')
+    p.add_argument('--answer-key-csv', default=None, help='Write answer key CSV (single-version mode)')
+    p.add_argument('--answer-key-md', default=None, help='Write answer key Markdown table (single-version mode)')
+    p.add_argument('--answer-key', action='store_true', help='Write default answer-key CSV and Markdown alongside exported YAML(s)')
     return p
 
 
@@ -91,7 +95,6 @@ def _split_csvish(values: Iterable[str]) -> List[str]:
 
 def _read_ids_from_file(path: str | Path) -> List[str]:
     txt = Path(path).read_text(encoding='utf-8')
-    # allow comma and/or newline separated
     parts = []
     for line in txt.splitlines():
         parts.extend(line.split(','))
@@ -124,7 +127,6 @@ def _filter_questions(questions, args: argparse.Namespace):
     notes['active_only'] = True
     notes['active_rows_loaded'] = len(filtered)
 
-    # chapter_section exact filter (can be combined)
     chapter_sections = set(_split_csvish(args.chapter_section))
     if chapter_sections:
         before = len(filtered)
@@ -221,9 +223,7 @@ def _write_answer_key_md(path: str | Path, rows: List[dict], exam_name: str, see
         '|---:|---|---|:---:|---:|',
     ]
     for r in rows:
-        lines.append(
-            f"| {r['order']} | {r['id']} | {r['chapter_section']} | {r['answer']} | {r['points']} |"
-        )
+        lines.append(f"| {r['order']} | {r['id']} | {r['chapter_section']} | {r['answer']} | {r['points']} |")
     lines.append('')
     lines.append('## Detailed explanations')
     lines.append('')
@@ -237,34 +237,57 @@ def _write_answer_key_md(path: str | Path, rows: List[dict], exam_name: str, see
     p.write_text('\n'.join(lines), encoding='utf-8')
 
 
-def main() -> int:
-    args = build_parser().parse_args()
-    questions = load_excel_questions(args.input_xlsx, sheet_name=args.sheet, active_only=True)
-    errors, warnings = validate_questions(questions, require_ids=True)
-    if errors:
-        for e in errors:
-            print(f'ERROR: {e}')
-        return 1
-    if warnings and not args.allow_warnings:
-        for w in warnings:
-            print(f'WARNING: {w}')
-        print('Refusing export due to warnings (use --allow-warnings to override)')
-        return 2
+def _make_timestamp_tag() -> str:
+    return datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    try:
-        questions, subset_notes = _filter_questions(questions, args)
-    except Exception as exc:
-        print(f'ERROR: {exc}')
-        return 3
 
-    if not questions:
-        print('ERROR: no questions selected for export after filters')
-        return 4
+def _derive_version_seed(base_seed: Optional[int], version_index: int) -> Optional[int]:
+    if base_seed is None:
+        return None
+    return int(base_seed) + (version_index - 1)
 
-    seed = args.seed
-    if seed is None and args.auto_seed:
-        seed = int(time.time())
 
+def _resolve_base_seed(args: argparse.Namespace) -> Optional[int]:
+    if args.seed is not None:
+        return int(args.seed)
+    if args.auto_seed or args.num_versions > 1:
+        return int(time.time())
+    return None
+
+
+def _version_file_stem(base: str, version_index: int, num_versions: int) -> str:
+    return base if num_versions == 1 else f'{base}_v{version_index:03d}'
+
+
+def _single_export_paths(args: argparse.Namespace) -> Dict[str, Optional[Path]]:
+    out_yaml = Path(args.output_yaml)
+    manifest_path = Path(args.manifest) if args.manifest else out_yaml.with_suffix(out_yaml.suffix + '.manifest.json')
+    ak_csv = Path(args.answer_key_csv) if args.answer_key_csv else (out_yaml.with_suffix('.answer_key.csv') if args.answer_key else None)
+    ak_md = Path(args.answer_key_md) if args.answer_key_md else (out_yaml.with_suffix('.answer_key.md') if args.answer_key else None)
+    return {'yaml': out_yaml, 'manifest': manifest_path, 'ak_csv': ak_csv, 'ak_md': ak_md}
+
+
+def _build_dir_paths(build_dir: Path, output_yaml_arg: str, version_index: int, num_versions: int, answer_key: bool) -> Dict[str, Optional[Path]]:
+    requested = Path(output_yaml_arg)
+    base = sanitize_filename_part(requested.stem or requested.name or 'exam')
+    stem = _version_file_stem(base, version_index, num_versions)
+    out_yaml = build_dir / f'{stem}.yaml'
+    manifest = build_dir / f'{stem}.manifest.json'
+    ak_csv = build_dir / f'{stem}.answer_key.csv' if answer_key else None
+    ak_md = build_dir / f'{stem}.answer_key.md' if answer_key else None
+    return {'yaml': out_yaml, 'manifest': manifest, 'ak_csv': ak_csv, 'ak_md': ak_md}
+
+
+def _export_one_version(
+    questions,
+    args: argparse.Namespace,
+    version_index: int,
+    num_versions: int,
+    seed: Optional[int],
+    warnings: List[str],
+    subset_notes: Dict[str, object],
+    paths: Dict[str, Optional[Path]],
+) -> Dict[str, object]:
     randomized_questions, rand_manifest = randomize_questions_for_export(
         questions,
         seed=seed,
@@ -272,48 +295,162 @@ def main() -> int:
         shuffle_options=not args.no_shuffle_options,
     )
 
+    exam_name = args.exam_name if num_versions == 1 else f"{args.exam_name} v{version_index:03d}"
     payload = questions_to_pyexam_yaml(
         randomized_questions,
-        exam_name=args.exam_name,
+        exam_name=exam_name,
         header=_read_header(args),
         include_points=True,
         include_ids_in_text=args.show_ids,
     )
 
-    out_yaml = Path(args.output_yaml)
+    out_yaml = paths['yaml']
+    assert out_yaml is not None
     out_yaml.parent.mkdir(parents=True, exist_ok=True)
     dump_yaml(payload, out_yaml)
 
-    manifest_path = Path(args.manifest) if args.manifest else out_yaml.with_suffix(out_yaml.suffix + '.manifest.json')
     manifest = {
+        'version_index': version_index,
+        'num_versions': num_versions,
         'input_xlsx': str(Path(args.input_xlsx)),
         'sheet': args.sheet,
         'output_yaml': str(out_yaml),
-        'exam_name': args.exam_name,
+        'exam_name': exam_name,
         'seed': seed,
         'warnings': warnings,
         'subset_filter': subset_notes,
         'randomisation': rand_manifest,
         'question_ids': [q.qid for q in randomized_questions],
     }
-    dump_json(manifest, manifest_path)
+    if paths['manifest'] is not None:
+        dump_json(manifest, paths['manifest'])
 
-    # Answer key outputs
-    if args.answer_key or args.answer_key_csv or args.answer_key_md:
+    answer_key_written = {}
+    if args.answer_key or paths.get('ak_csv') or paths.get('ak_md'):
         rows = _answer_key_rows(randomized_questions, rand_manifest)
-        ak_csv = Path(args.answer_key_csv) if args.answer_key_csv else out_yaml.with_suffix('.answer_key.csv')
-        ak_md = Path(args.answer_key_md) if args.answer_key_md else out_yaml.with_suffix('.answer_key.md')
-        if args.answer_key or args.answer_key_csv:
-            _write_answer_key_csv(ak_csv, rows)
-            print(f'Answer key CSV -> {ak_csv}')
-        if args.answer_key or args.answer_key_md:
-            _write_answer_key_md(ak_md, rows, args.exam_name, seed)
-            print(f'Answer key Markdown -> {ak_md}')
+        if paths.get('ak_csv') is not None:
+            _write_answer_key_csv(paths['ak_csv'], rows)
+            answer_key_written['csv'] = str(paths['ak_csv'])
+        if paths.get('ak_md') is not None:
+            _write_answer_key_md(paths['ak_md'], rows, exam_name, seed)
+            answer_key_written['md'] = str(paths['ak_md'])
 
-    print(f'Exported {len(randomized_questions)} questions -> {out_yaml}')
-    print(f'Manifest -> {manifest_path}')
-    if seed is not None:
-        print(f'Seed: {seed}')
+    return {
+        'version_index': version_index,
+        'seed': seed,
+        'exam_name': exam_name,
+        'output_yaml': str(out_yaml),
+        'manifest': str(paths['manifest']) if paths.get('manifest') else None,
+        'answer_key': answer_key_written,
+        'question_ids': [q.qid for q in randomized_questions],
+    }
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.num_versions < 1:
+        print('ERROR: --num-versions must be >= 1')
+        return 1
+    if args.num_versions > 1 and args.manifest:
+        print('ERROR: --manifest is only supported in single-version mode; use --build-dir for sets')
+        return 1
+    if args.num_versions > 1 and not args.build_dir:
+        print('ERROR: --num-versions > 1 requires --build-dir')
+        return 1
+    if args.build_dir and (args.answer_key_csv or args.answer_key_md):
+        print('ERROR: --answer-key-csv/--answer-key-md are single-version paths; use --answer-key with --build-dir')
+        return 1
+
+    questions = load_excel_questions(args.input_xlsx, sheet_name=args.sheet, active_only=True)
+    errors, warnings = validate_questions(questions, require_ids=True)
+    if errors:
+        for e in errors:
+            print(f'ERROR: {e}')
+        return 2
+    if warnings and not args.allow_warnings:
+        for w in warnings:
+            print(f'WARNING: {w}')
+        print('Refusing export due to warnings (use --allow-warnings to override)')
+        return 3
+
+    try:
+        questions, subset_notes = _filter_questions(questions, args)
+    except Exception as exc:
+        print(f'ERROR: {exc}')
+        return 4
+
+    if not questions:
+        print('ERROR: no questions selected for export after filters')
+        return 5
+
+    base_seed = _resolve_base_seed(args)
+
+    build_dir: Optional[Path] = None
+    if args.build_dir:
+        build_dir = Path(args.build_dir)
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+    version_records: List[Dict[str, object]] = []
+    for i in range(1, args.num_versions + 1):
+        seed_i = _derive_version_seed(base_seed, i)
+        if build_dir is not None:
+            paths = _build_dir_paths(build_dir, args.output_yaml, i, args.num_versions, answer_key=args.answer_key)
+        else:
+            paths = _single_export_paths(args)
+        rec = _export_one_version(
+            questions=questions,
+            args=args,
+            version_index=i,
+            num_versions=args.num_versions,
+            seed=seed_i,
+            warnings=warnings,
+            subset_notes=subset_notes,
+            paths=paths,
+        )
+        version_records.append(rec)
+
+    # Build-set manifest folder (or single-version side manifest remains enough)
+    if build_dir is not None:
+        top_manifest = {
+            'created_at': datetime.now().isoformat(timespec='seconds'),
+            'build_type': 'exam_set' if args.num_versions > 1 else 'exam_export',
+            'build_dir': str(build_dir),
+            'input_xlsx': str(Path(args.input_xlsx)),
+            'sheet': args.sheet,
+            'output_base': str(args.output_yaml),
+            'exam_name': args.exam_name,
+            'num_versions': args.num_versions,
+            'base_seed': base_seed,
+            'seed_policy': 'incremental_from_base',
+            'active_only': True,
+            'selected_question_ids_pre_randomisation': [q.qid for q in questions],
+            'selected_count': len(questions),
+            'warnings': warnings,
+            'subset_filter': subset_notes,
+            'randomisation': {
+                'shuffle_questions': not args.no_shuffle_questions,
+                'shuffle_options': not args.no_shuffle_options,
+            },
+            'versions': version_records,
+        }
+        dump_json(top_manifest, build_dir / 'build_set_manifest.json')
+        # convenience file
+        (build_dir / 'selected_question_ids.txt').write_text('\n'.join([q.qid or '' for q in questions]) + '\n', encoding='utf-8')
+
+    if len(version_records) == 1:
+        rec = version_records[0]
+        print(f"Exported {len(rec['question_ids'])} questions -> {rec['output_yaml']}")
+        if rec.get('manifest'):
+            print(f"Manifest -> {rec['manifest']}")
+        if rec.get('seed') is not None:
+            print(f"Seed: {rec['seed']}")
+    else:
+        print(f"Exported exam set with {len(version_records)} versions -> {build_dir}")
+        print(f"Base seed: {base_seed}")
+        print(f"Build set manifest -> {build_dir / 'build_set_manifest.json'}")
+        for rec in version_records:
+            print(f"  v{int(rec['version_index']):03d}: seed={rec['seed']} -> {rec['output_yaml']}")
+
     if subset_notes:
         print(f'Subset/filter applied: {subset_notes}')
     if warnings:
