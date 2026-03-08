@@ -11,6 +11,8 @@ from kabuto_common import (
     dump_json,
     dump_yaml,
     load_excel_questions,
+    matches_section_selector,
+    chapter_section_in_range,
     questions_to_pyexam_yaml,
     randomize_questions_for_export,
     validate_questions,
@@ -39,6 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
         action='append',
         default=[],
         help='Include only rows matching this chapter_section (repeatable; comma-separated values also allowed)',
+    )
+    p.add_argument(
+        '--section-prefix',
+        action='append',
+        default=[],
+        help=(
+            'Include rows whose chapter_section matches a prefix/wildcard/range (repeatable; comma-separated also allowed). '
+            'Examples: MTM3.*, MTM3., MTM1.*-MTM5.*'
+        ),
+    )
+    p.add_argument(
+        '--section-range',
+        nargs=2,
+        action='append',
+        metavar=('START', 'END'),
+        default=[],
+        help='Include rows with chapter_section in inclusive range (e.g., MTM1.* MTM5.* or MTM3.2 MTM4.4)',
     )
     p.add_argument('--ids', default=None, help='Comma-separated question IDs to include (preserves this order)')
     p.add_argument('--id-file', default=None, help='Text file with question IDs to include (newline or comma separated)')
@@ -102,8 +121,10 @@ def _order_and_filter_by_ids(questions, ordered_ids: Sequence[str]) -> Tuple[Lis
 def _filter_questions(questions, args: argparse.Namespace):
     notes: Dict[str, object] = {}
     filtered = list(questions)
+    notes['active_only'] = True
+    notes['active_rows_loaded'] = len(filtered)
 
-    # chapter_section filter (can be combined)
+    # chapter_section exact filter (can be combined)
     chapter_sections = set(_split_csvish(args.chapter_section))
     if chapter_sections:
         before = len(filtered)
@@ -112,13 +133,32 @@ def _filter_questions(questions, args: argparse.Namespace):
         notes['chapter_section_filter_before'] = before
         notes['chapter_section_filter_after'] = len(filtered)
 
+    section_selectors = _split_csvish(args.section_prefix)
+    if section_selectors:
+        before = len(filtered)
+        filtered = [q for q in filtered if any(matches_section_selector(q.chapter_section, s) for s in section_selectors)]
+        notes['section_prefix'] = section_selectors
+        notes['section_prefix_filter_before'] = before
+        notes['section_prefix_filter_after'] = len(filtered)
+
+    if args.section_range:
+        before = len(filtered)
+        ranges = [(a, b) for a, b in args.section_range]
+        filtered = [
+            q for q in filtered
+            if any(chapter_section_in_range(q.chapter_section, start, end) for start, end in ranges)
+        ]
+        notes['section_range'] = ranges
+        notes['section_range_filter_before'] = before
+        notes['section_range_filter_after'] = len(filtered)
+
     ordered_ids: List[str] = []
     if args.ids:
         ordered_ids.extend(_split_csvish([args.ids]))
     if args.id_file:
         ordered_ids.extend(_read_ids_from_file(args.id_file))
     if args.subset_xlsx:
-        subset_questions = load_excel_questions(args.subset_xlsx, sheet_name=args.subset_sheet)
+        subset_questions = load_excel_questions(args.subset_xlsx, sheet_name=args.subset_sheet, active_only=True)
         subset_errors, subset_warnings = validate_questions(subset_questions, require_ids=True)
         if subset_errors:
             raise ValueError('subset workbook has validation errors: ' + '; '.join(subset_errors[:10]))
@@ -199,7 +239,7 @@ def _write_answer_key_md(path: str | Path, rows: List[dict], exam_name: str, see
 
 def main() -> int:
     args = build_parser().parse_args()
-    questions = load_excel_questions(args.input_xlsx, sheet_name=args.sheet)
+    questions = load_excel_questions(args.input_xlsx, sheet_name=args.sheet, active_only=True)
     errors, warnings = validate_questions(questions, require_ids=True)
     if errors:
         for e in errors:

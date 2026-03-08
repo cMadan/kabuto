@@ -26,12 +26,16 @@ It is designed to keep question management simple and under your control:
 4. `do4_build_pyexam.py`  
    Run `pyexam` to generate LaTeX/PDF outputs.
 
+5. `do5_make_subset.py`  
+   Create a subset workbook from the bank using filters (active rows only by default).
+
 ## Canonical Excel schema
 
 Columns:
 
 - `import_batch` *(optional; provenance label, first column by design)*
 - `id` *(required after import; generated on first YAML→Excel import)*
+- `active` *(optional; defaults to `1`; only rows with `active=1` are exported by default)*
 - `chapter_section` *(optional; e.g., `MTM3.3`)*
 - `stem` *(required)*
 - `opt_a` *(required if used; at least 2 total options required across A–E)*
@@ -47,6 +51,7 @@ Columns:
 Notes:
 
 - MCQ only (single correct answer)
+- `active=0` is a convenient way to keep questions in the bank but exclude them from subset/export steps
 - Maximum 5 options
 - Excel is the curated source of truth
 
@@ -67,6 +72,8 @@ Rules:
 - if `chapter_section` is missing/invalid, fallback prefix is `unassigned` (e.g., `unassigned_001`)
 
 ## Intake YAML format (minimal structured input)
+
+Intake YAML does **not** include IDs.
 
 Supported per-question fields:
 
@@ -116,6 +123,7 @@ kabuto/
 ├─ do2_validate_bank.py
 ├─ do3_export_bank_to_pyexam.py
 ├─ do4_build_pyexam.py
+├─ do5_make_subset.py
 ├─ examples/
 │  ├─ intake.yaml
 │  ├─ curated_bank.xlsx
@@ -129,5 +137,5 @@ kabuto/
 1. Import minimal YAML into a new or existing Excel bank.
 2. Curate questions in Excel (edit wording, set `shuffle_mode`, assign `chapter_section`, trim to an exam subset).
 3. Validate the bank/subset.
-4. Export to `pyexam` YAML (optionally filter by `chapter_section`, ID list, or a subset workbook; optionally emit answer-key CSV/Markdown).
+4. Export to `pyexam` YAML (active rows only by default; optionally filter by `chapter_section`, section prefix/range, ID list, or a subset workbook; optionally emit answer-key CSV/Markdown).
 5. Build final PDF with `pyexam`.

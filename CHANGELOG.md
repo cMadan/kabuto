@@ -2,6 +2,18 @@
 
 All notable changes to the Kabuto MCQ Exam Pipeline are documented in this file.
 
+## v1.2
+
+- Added `active` column to canonical Excel schema (after `id`)
+  - defaults to `1` on import
+  - rows with `active == 1` are exported by default
+- Added `do5_make_subset.py` (subset workbook creator)
+- Added chapter-section filtering enhancements to `do3` and `do5`
+  - `--section-prefix MTM3.*`
+  - single-argument range syntax: `--section-prefix MTM1.*-MTM5.*`
+  - two-argument inclusive range syntax: `--section-range MTM1.* MTM5.*`
+  - supports chapter wildcards and exact section endpoints (e.g., `MTM3.2`)
+
 ## v1.1
 
 - Added `do0_make_blank_bank.py` to create a blank Excel bank with canonical headers

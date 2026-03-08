@@ -14,6 +14,7 @@ from openpyxl import Workbook, load_workbook
 EXCEL_COLUMNS = [
     "import_batch",
     "id",
+    "active",
     "chapter_section",
     "stem",
     "opt_a",
@@ -48,6 +49,7 @@ ID_RE = re.compile(r"^([a-z0-9_]+)_(\d{3,})$")
 class Question:
     import_batch: Optional[str] = None
     qid: Optional[str] = None
+    active: int = 1
     chapter_section: Optional[str] = None
     stem: str = ""
     options: List[str] = None  # type: ignore[assignment]
@@ -67,6 +69,7 @@ class Question:
         row = {col: "" for col in EXCEL_COLUMNS}
         row["import_batch"] = self.import_batch or ""
         row["id"] = self.qid or ""
+        row["active"] = int(self.active) if self.active in (0, 1) else 1
         row["chapter_section"] = self.chapter_section or ""
         row["stem"] = self.stem
         for i, opt in enumerate(self.options[:5]):
@@ -81,6 +84,8 @@ class Question:
         d: Dict[str, Any] = {}
         if include_id and self.qid:
             d["id"] = self.qid
+        if self.active != 1:
+            d["active"] = int(self.active)
         if self.chapter_section:
             d["chapter_section"] = self.chapter_section
         d["stem"] = self.stem
@@ -140,6 +145,27 @@ def normalize_points(value: Any, default: int = DEFAULT_POINTS) -> int:
     return int(x)
 
 
+
+
+def normalize_active(value: Any, default: int = 1) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return 1 if value else 0
+    s = normalize_text(value).lower()
+    if s == "":
+        return default
+    if s in {"1", "true", "yes", "y"}:
+        return 1
+    if s in {"0", "false", "no", "n"}:
+        return 0
+    try:
+        x = float(s)
+        if x in (0.0, 1.0):
+            return int(x)
+    except Exception:
+        pass
+    raise ValueError(f"invalid active '{value}' (expected 0 or 1)")
 def normalize_options(options: Any) -> List[str]:
     if not isinstance(options, list):
         raise ValueError("options must be a list")
@@ -241,6 +267,7 @@ def load_intake_yaml_questions(yaml_path: str | Path) -> Tuple[Dict[str, Any], L
         if OPTION_LETTERS.index(answer) >= len(options):
             raise ValueError(f"question {i}: answer {answer} points to missing option")
         q = Question(
+            active=1,
             chapter_section=normalize_text(raw.get("chapter_section")) or None,
             stem=stem,
             options=options,
@@ -323,9 +350,11 @@ def excel_row_to_question(ws: Any, row_idx: int) -> Optional[Question]:
 
     points_val = vals["points"]
     points = DEFAULT_POINTS if normalize_text(points_val) == "" else int(float(points_val))
+    active = normalize_active(vals.get("active"), 1)
     return Question(
         import_batch=normalize_text(vals["import_batch"]) or None,
         qid=normalize_text(vals["id"]) or None,
+        active=active,
         chapter_section=normalize_text(vals["chapter_section"]) or None,
         stem=normalize_text(vals["stem"]),
         options=options,
@@ -336,7 +365,7 @@ def excel_row_to_question(ws: Any, row_idx: int) -> Optional[Question]:
     )
 
 
-def load_excel_questions(xlsx_path: str | Path, sheet_name: Optional[str] = None) -> List[Question]:
+def load_excel_questions(xlsx_path: str | Path, sheet_name: Optional[str] = None, active_only: bool = False) -> List[Question]:
     wb = load_workbook(xlsx_path)
     ws = wb[sheet_name] if (sheet_name and sheet_name in wb.sheetnames) else wb.active
     ensure_sheet_headers(ws)
@@ -344,6 +373,8 @@ def load_excel_questions(xlsx_path: str | Path, sheet_name: Optional[str] = None
     for r in range(2, ws.max_row + 1):
         q = excel_row_to_question(ws, r)
         if q is not None:
+            if active_only and int(getattr(q, "active", 1)) != 1:
+                continue
             questions.append(q)
     return questions
 
@@ -385,6 +416,9 @@ def validate_questions(questions: List[Question], require_ids: bool = True) -> T
                 errors.append(f"{label}: points must be positive")
         except Exception:
             errors.append(f"{label}: invalid points '{q.points}'")
+
+        if int(getattr(q, 'active', 1)) not in {0, 1}:
+            errors.append(f"{label}: active must be 0 or 1")
 
         lowered = [o.casefold().strip() for o in q.options]
         if len(lowered) != len(set(lowered)):
@@ -491,6 +525,53 @@ def questions_to_pyexam_yaml(
     payload["questions"] = pyqs
     return payload
 
+
+
+def parse_chapter_section_numbers(chapter_section: Optional[str]) -> Optional[Tuple[int, int]]:
+    s = normalize_text(chapter_section)
+    m = CHAPTER_SECTION_RE.match(s)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def chapter_section_in_range(chapter_section: Optional[str], start: str, end: str) -> bool:
+    nums = parse_chapter_section_numbers(chapter_section)
+    if nums is None:
+        return False
+    start_nums = parse_range_endpoint(start, is_start=True)
+    end_nums = parse_range_endpoint(end, is_start=False)
+    if start_nums is None or end_nums is None:
+        return False
+    return start_nums <= nums <= end_nums
+
+
+def parse_range_endpoint(s: str, is_start: bool) -> Optional[Tuple[int, int]]:
+    txt = normalize_text(s)
+    m = re.match(r"^MTM\s*(\d+)\s*\.\s*\*$", txt, re.I)
+    if m:
+        ch = int(m.group(1))
+        return (ch, 0 if is_start else 9999)
+    nums = parse_chapter_section_numbers(txt)
+    return nums
+
+
+def matches_section_selector(chapter_section: Optional[str], selector: str) -> bool:
+    cs = normalize_text(chapter_section)
+    if not cs:
+        return False
+    sel = normalize_text(selector)
+    if not sel:
+        return False
+    # one-arg range syntax, e.g. MTM1.*-MTM5.*
+    if '-' in sel:
+        parts = [p.strip() for p in sel.split('-', 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            if chapter_section_in_range(cs, parts[0], parts[1]):
+                return True
+    if sel.endswith('*'):
+        return cs.lower().startswith(sel[:-1].lower())
+    return cs.lower().startswith(sel.lower())
 
 def sanitize_filename_part(s: str) -> str:
     s = (s or "").strip().lower()
