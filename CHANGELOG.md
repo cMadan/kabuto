@@ -2,6 +2,16 @@
 
 All notable changes to the Kabuto MCQ Exam Pipeline are documented in this file.
 
+## v1.4
+
+- Bank summary/reporting integrated into `do2_validate_bank.py`
+  - default behavior remains validation-only
+  - `--summary` prints validation + summary
+  - `--summary-only` prints summary only (no validation-based failure exit)
+  - summary JSON export via `--json-out`
+- Added bank summary features (counts by active/inactive, chapter-section coverage, shuffle-mode counts, missing explanations, validation category totals)
+- Added `docs/commands.md` with example command lines for `do0`–`do5`
+
 ## v1.3
 
 - Added build-record folder support to `do3_export_bank_to_pyexam.py`

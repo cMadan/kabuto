@@ -9,6 +9,8 @@ It is designed to keep question management simple and under your control:
 - export to `pyexam` YAML
 - render final PDF via `pyexam` (via LaTeX)
 
+![logo](./docs/kabuto.png)
+
 ## Pipeline overview
 
 0. `do0_make_blank_bank.py`  
@@ -18,7 +20,7 @@ It is designed to keep question management simple and under your control:
    Import minimal/draft YAML into an Excel question bank and assign stable IDs.
 
 2. `do2_validate_bank.py`  
-   Validate the curated Excel bank (schema + content checks).
+   Validate the curated Excel bank (default), optionally print a bank summary (`--summary` / `--summary-only`).
 
 3. `do3_export_bank_to_pyexam.py`  
    Export curated questions from Excel to `pyexam` YAML (with optional seeded randomisation).
@@ -29,7 +31,8 @@ It is designed to keep question management simple and under your control:
 5. `do5_make_subset.py`  
    Create a subset workbook from the bank using filters (active rows only by default).
 
-## Canonical Excel schema
+
+## Canonical Excel schema (one sheet, one row per question)
 
 Columns:
 
@@ -75,6 +78,30 @@ Rules:
 
 Intake YAML does **not** include IDs.
 
+```yaml
+questions:
+  - chapter_section: MTM3.3
+    stem: Which process best describes converting information into a memory trace?
+    options:
+      - Encoding
+      - Retrieval
+      - Reconsolidation
+      - Extinction
+    answer: A
+    explanation: Encoding is the process of converting information into a form that can be stored.
+
+  - chapter_section: MTM3.3
+    stem: Which statement is correct?
+    options:
+      - Statement A
+      - Statement B
+      - Both A and B
+      - Neither A nor B
+    answer: C
+    shuffle_mode: none
+    explanation: This item references option letters, so option order must be preserved.
+```
+
 Supported per-question fields:
 
 - `chapter_section` (optional)
@@ -85,7 +112,11 @@ Supported per-question fields:
 - `points` (optional)
 - `explanation` (optional)
 
-## Validation (what `do2_...` checks)
+## Validation and summary (`do2_validate_bank.py`)
+
+Default behavior is validation only. Use `--summary` to print both validation and a coverage/health summary, or `--summary-only` to print only the summary report.
+
+### Validation checks
 
 Hard errors:
 
@@ -124,6 +155,9 @@ kabuto/
 ├─ do3_export_bank_to_pyexam.py
 ├─ do4_build_pyexam.py
 ├─ do5_make_subset.py
+├─ docs/
+│  └─ commands.md
+├─ prompt_intake_yaml.txt
 ├─ examples/
 │  ├─ intake.yaml
 │  ├─ curated_bank.xlsx
@@ -139,3 +173,22 @@ kabuto/
 3. Validate the bank/subset.
 4. Export to `pyexam` YAML (active rows only by default; optionally filter by `chapter_section`, section prefix/range, ID list, or a subset workbook; optionally emit answer-key CSV/Markdown).
 5. Build final PDF with `pyexam`.
+
+## Quick start
+
+Additional command examples are collected in `docs/commands.md`. 
+
+```bash
+python do0_make_blank_bank.py examples/blank_bank.xlsx
+python do1_import_to_bank.py examples/intake.yaml examples/curated_bank.xlsx --mode new --import-batch demo_batch
+python do2_validate_bank.py examples/curated_bank.xlsx
+python do2_validate_bank.py examples/curated_bank.xlsx --summary --show-sections 20 --json-out examples/bank_summary.json
+python do3_export_bank_to_pyexam.py examples/curated_bank.xlsx examples/exam_for_pyexam.yaml --exam-name "MTM Chapter 3" --seed 123 --answer-key
+# Example subset workbook by chapter_section range
+python do5_make_subset.py examples/curated_bank.xlsx examples/subset_mtm3_to5.xlsx --section-prefix MTM3.*-MTM5.* --allow-warnings
+# summary-only mode (same command as validation)
+python do2_validate_bank.py examples/curated_bank.xlsx --summary-only --show-sections 20
+# Example subset export by chapter_section
+python do3_export_bank_to_pyexam.py examples/curated_bank.xlsx examples/exam_mtm3_3.yaml --chapter-section MTM3.3 --seed 123 --allow-warnings
+python do4_build_pyexam.py examples/exam_for_pyexam.yaml builds/ch3_v1 --format pdf
+```
