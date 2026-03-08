@@ -1,0 +1,30 @@
+Generate MCQ questions in YAML for my intake format.
+
+Return YAML only (no prose, no markdown fences, no commentary).
+
+Top-level format:
+questions:
+  - ...
+
+Each question must include exactly these fields:
+- chapter_section
+- stem
+- options (exactly 4 options, corresponding to A-D)
+- answer (A-D)
+- explanation (brief explanation of why the correct answer is correct)
+
+Optional field (only when needed):
+- shuffle_mode (`random` or `none`)
+
+Constraints:
+- Single-correct-answer MCQ only
+- `answer` must match the correct option position
+- If any option refers to letters (e.g., "Both A and B"), set `shuffle_mode: none`
+- Keep wording clear and concise
+- Use `chapter_section` labels in the format `MTM[chapter].[section]` (e.g., `MTM3.3`)
+- Generate questions that are roughly balanced across the major sections of the chapter
+- If a chapter has uneven section lengths, distribute approximately proportionally while still covering all major sections
+- Include at least 1 question per major section when possible
+- Group output by `chapter_section`
+
+Generate 20 questions for chapter [CHAPTER].
